@@ -1,0 +1,59 @@
+menu "MyBackground 组件配置"
+
+config MAX_BACKGROUND_TASKS
+    int "最大后台任务数量 (Maximum number of concurrent background tasks)"
+    range 8 255
+    default 128
+    help
+        可同时排队和执行的最大后台任务数。
+        值越大，并发能力越强，但内存占用越高。
+        最小建议值：8，最大支持：255。
+
+
+config STACK_SIZE
+    int "每个后台任务的堆栈大小（单位：字，word）(Stack size per task in words)"
+    range 2048 20480
+    default 10240
+    help
+        为每个后台任务分配的堆栈大小（1 word = 4 字节，在 ESP32/ESP32-C3 上）。
+        较大的堆栈可支持更复杂的函数调用，但会增加总内存消耗。
+        默认值 10240 words ≈ 40 KB。
+
+config CORE_ID
+    int "后台任务绑定的 CPU 核心 (CPU core affinity for background tasks)"
+    default 0
+    help
+        指定后台任务运行的 CPU 核心：
+          -1 : 无绑定 —— 可在任意核心运行  
+           0 : 固定在 Core 0
+        注意：ESP32-C3 为单核芯片，仅 Core 0 可用。
+        在 ESP32-C3 上设为 -1 无实际效果。
+
+config BACKGROUND_TASKS_PRIORITY
+    int "后台任务优先级 (Background task priority)"
+    range 0 8
+    default 5
+    help
+        设置 FreeRTOS 后台任务的优先级：
+          0 = 最低优先级  
+          8 = 最高优先级
+        建议设置低于实时任务（如中断处理），但高于空闲任务，
+        以保证及时响应又不影响系统稳定性。
+
+config ENABLE_TASK_CAPTURE_SUPPORT
+    bool "启用任务变量捕获功能 (Enable lambda-like variable capture)"
+    default n
+    help
+        允许后台任务“捕获”调用上下文中的局部变量（类似 C++ Lambda 表达式）。
+        启用后会增加内存开销和实现复杂度。
+        仅在任务需要引用已退出函数的局部变量时才启用。
+
+config SUPPORT_TASK_WITHOUT_ARG
+    bool "支持无参任务函数 'void func(void)' (Support no-argument task functions)"
+    default n
+    help
+        允许注册形如 void func(void) 的任务函数。
+        若禁用，则所有任务必须声明为 void func(void *arg)，即使不使用参数。
+        不建议启用，在库内自动转化为默认参数为nullptr的含参任务。
+
+endmenu

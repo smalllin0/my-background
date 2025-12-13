@@ -1,0 +1,8 @@
+version: 1.0.4
+description: 一个后台管理任务组件
+license: Apache 2.0
+dependencies:
+  idf: '>=5.4'
+  smallin/my-linklist: ^1.0.0
+repository: 
+  https://gitee.com/comrade-kobayashi/my-component-library/tree/master/components/my-background
