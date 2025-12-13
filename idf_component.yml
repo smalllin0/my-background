@@ -3,5 +3,5 @@ dependencies:
   smallin/my-linklist: ^1.0.0
 description: 一个后台管理任务组件
 license: Apache 2.0
-repository: https://gitee.com/comrade-kobayashi/my-component-library/tree/master/components/my-background
+repository: git@github.com:smalllin0/my-background.git
 version: 1.0.5
