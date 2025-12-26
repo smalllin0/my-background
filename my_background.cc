@@ -72,7 +72,6 @@ bool MyBackground::Schedule(RawTask fn, const char* task_name, void* arg, FreeFu
         if ( count > max_tasks_count_ ) {
             max_tasks_count_ = count;
         }
-        current_tasks_++;
         if (background_) xTaskNotifyGive(background_);
     }
 
@@ -110,7 +109,6 @@ bool MyBackground::captureSchedule(TaskWithArgFun fn, const char* task_name, voi
         if ( count > max_tasks_count_ ) {
             max_tasks_count_ = count;
         }
-        current_tasks_++;
         if (background_) xTaskNotifyGive(background_);
     }
 
@@ -150,7 +148,6 @@ size_t MyBackground::Clear(const std::string& name)
             return false;
         });
     }
-    current_tasks_ = 0;
     return count;
 }
 
@@ -160,11 +157,11 @@ void MyBackground::PrintBackgroundInfo()
     Schedule([](void* arg){
         auto self = reinterpret_cast<MyBackground*>(arg);
         if (self->max_tasks_count_ <= (CONFIG_MAX_BACKGROUND_TASKS >> 1)) {
-            ESP_LOGI(TAG, "current tasks: %d, Max background tasks: %d", self->current_tasks_, self->max_tasks_count_);
+            ESP_LOGI(TAG, "current tasks: %d, Max background tasks: %d", self->task_list_.size(), self->max_tasks_count_);
         } else if (self->max_tasks_count_ <= ((CONFIG_MAX_BACKGROUND_TASKS >> 1) + (CONFIG_MAX_BACKGROUND_TASKS >> 2))) {
-            ESP_LOGW(TAG, "current tasks: %d, Max background tasks: %d", self->current_tasks_, self->max_tasks_count_);
+            ESP_LOGW(TAG, "current tasks: %d, Max background tasks: %d", self->task_list_.size(), self->max_tasks_count_);
         } else {
-            ESP_LOGE(TAG, "current tasks: %d, Max background tasks: %d", self->current_tasks_, self->max_tasks_count_);
+            ESP_LOGE(TAG, "current tasks: %d, Max background tasks: %d", self->task_list_.size(), self->max_tasks_count_);
         }
 
         #ifdef CONFIG_FREERTOS_USE_STATS_FORMATTING_FUNCTIONS
@@ -197,7 +194,6 @@ void MyBackground::BackgroundHandler()
                 ESP_LOGI(TAG, "%s: 处理完成", task->name);
 #endif
             });
-            current_tasks_ --;
         }
     }
     ESP_LOGE(TAG, "Background manager task run out of range!");

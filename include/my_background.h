@@ -137,7 +137,7 @@ public:
 #if CONFIG_SUPPORT_TASK_WITHOUT_ARG
     bool Schedule(TaskWithoutArgFun fn, const std::string& task_name="");
 #endif
-    size_t  GetBackgroundTasks() const { return current_tasks_; };
+    size_t  GetBackgroundTasks() const { return task_list_.size(); };
     void PrintBackgroundInfo();
 
 private:
@@ -150,7 +150,6 @@ private:
 
     void BackgroundHandler();
     
-    size_t current_tasks_{0};
     size_t max_tasks_count_{0};
     std::atomic<bool>   clear_flag_{false};
     TaskHandle_t        background_{nullptr};   // 后台任务句柄
