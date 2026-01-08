@@ -12,7 +12,6 @@ config MAX_BACKGROUND_TASKS
 
 config STACK_SIZE
     int "每个后台任务的堆栈大小（单位：字，word）(Stack size per task in words)"
-    range 2048 20480
     default 10240
     help
         为每个后台任务分配的堆栈大小（1 word = 4 字节，在 ESP32/ESP32-C3 上）。
