@@ -47,10 +47,7 @@ private:
         }
 
         void Cleanup() {
-            if (free_fn && arg) {
-                free_fn(arg);
-                arg = nullptr;
-            }
+            if (free_fn) free_fn(arg);
         }
 
         Task(const Task&) = delete;
