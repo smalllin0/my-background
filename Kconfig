@@ -41,10 +41,10 @@ config BACKGROUND_TASKS_PRIORITY
 
 config ENABLE_TASK_CAPTURE_SUPPORT
     bool "启用任务变量捕获功能 (Enable lambda-like variable capture)"
-    default n
+    default y
     help
         允许后台任务“捕获”调用上下文中的局部变量（类似 C++ Lambda 表达式）。
-        启用后会增加内存开销和实现复杂度。
+        编程更简便，但启用后会增加内存开销和实现复杂度。
         仅在任务需要引用已退出函数的局部变量时才启用。
 
 config SUPPORT_TASK_WITHOUT_ARG
