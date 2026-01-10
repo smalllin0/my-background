@@ -13,7 +13,6 @@
 
 MyBackground::MyBackground()
 {
-
     // 创建后台管理任务（不再创建 event group，使用 task notify）
     auto result = xTaskCreatePinnedToCore(
         [](void* arg){
@@ -49,10 +48,10 @@ MyBackground::~MyBackground()
 /// @param arg 任务函数参数
 /// @param free_fn 任务清理时资源回收函数
 /// @return 调度到后台队列成功返回true
-bool MyBackground::Schedule(RawTask fn, const char* task_name, void* arg, FreeFun free_fn) 
+bool MyBackground::Schedule(TaskFun fn, const char* task_name, void* arg, FreeFun free_fn) 
 {
     if (!fn) {
-        ESP_LOGW(TAG, "Attempt to schedule null task function.");
+        ESP_LOGE(TAG, "Attempt to schedule null task function.");
         return false;
     }
     if (task_list_.full()) {
@@ -78,54 +77,16 @@ bool MyBackground::Schedule(RawTask fn, const char* task_name, void* arg, FreeFu
     return ok;
 }
 
-
-/// @brief 调度一个可捕获任务到后台运行
-/// @param fn 任务函数
-/// @param task_name 任务名
-/// @param arg 任务函数参数
-/// @param free_fn 任务清理时资源回收函数
-/// @return 调度到后台队列成功返回true
-#if CONFIG_ENABLE_TASK_CAPTURE_SUPPORT
-bool MyBackground::captureSchedule(TaskWithArgFun fn, const char* task_name, void* arg, FreeFun free_fn) 
-{
-    if (!fn) {
-        ESP_LOGW(TAG, "Attempt to schedule null task function.");
-        return false;
-    }
-    if (task_list_.full()) {
-        printf("Task buffer full, task dropped.\n");
-        return false;
-    }
-    // 注意：引用捕获在这里是安全的，因为：
-    // 1. lambda 在 push_back 内部立即执行
-    // 2. Task 构造函数拷贝所有数据
-    // 3. 构造在函数返回前完成
-    auto ok = task_list_.construct([&task_name, &fn, &arg, &free_fn](Task* task){
-        new (task) Task(task_name, fn, arg, free_fn);
-    });
-    if (ok) {
-        // 计算更新最大任务数量
-        auto count = task_list_.size();
-        if ( count > max_tasks_count_ ) {
-            max_tasks_count_ = count;
-        }
-        if (background_) xTaskNotifyGive(background_);
-    }
-
-    return ok;
-}
-#endif
-
 /// @brief 调度一个任务到后台运行(无参数任务函数兼容版本，后续可能删除)
 #if CONFIG_SUPPORT_TASK_WITHOUT_ARG
 bool MyBackground::Schedule(TaskWithoutArgFun fn, const std::string& task_name) 
 {
     if (!fn) {
-        ESP_LOGW(TAG, "Attempt to schedule null task function.");
+        ESP_LOGE(TAG, "Attempt to schedule null task function.");
         return false;
     }
-    auto function = [&fn](void*) { fn(); };
-    return captureSchedule(function, task_name.c_str(), nullptr, nullptr);
+    auto function = [fn](void*) { fn(); };
+    return Schedule(function, task_name.c_str(), nullptr, nullptr);
 }
 #endif
 
@@ -154,6 +115,30 @@ size_t MyBackground::Clear(const std::string& name)
 
 void MyBackground::PrintBackgroundInfo()
 {
+#if CONFIG_ENABLE_TASK_CAPTURE_SUPPORT
+    Schedule([this](void* arg){
+        if (max_tasks_count_ <= (CONFIG_MAX_BACKGROUND_TASKS >> 1)) {
+            ESP_LOGI(TAG, "current tasks: %d, Max background tasks: %d", task_list_.size(), max_tasks_count_);
+        } else if (max_tasks_count_ <= ((CONFIG_MAX_BACKGROUND_TASKS >> 1) + (CONFIG_MAX_BACKGROUND_TASKS >> 2))) {
+            ESP_LOGW(TAG, "current tasks: %d, Max background tasks: %d", task_list_.size(), max_tasks_count_);
+        } else {
+            ESP_LOGE(TAG, "current tasks: %d, Max background tasks: %d", task_list_.size(), max_tasks_count_);
+        }
+
+        #ifdef CONFIG_FREERTOS_USE_STATS_FORMATTING_FUNCTIONS
+            char task_list_buffer[1024];
+            vTaskList(task_list_buffer);
+
+            printf("Name        State     Pri      Stack  Num\n");
+            printf("-----------------------------------------\n");
+            printf("%s\n", task_list_buffer);
+            printf("help: X(Running) B(Blocked) R(Ready) D(Deleted) S(Suspended)\n");
+            printf("  Pri:    Priority, higher value indicates higher priority.\n");
+            printf("  Stack:  Mini remaining stack space during task execution (in words).\n");
+            printf("  Num:    Task creation sequence number.\n");
+        #endif
+    }, "PrintBg");
+#else
     Schedule([](void* arg){
         auto self = reinterpret_cast<MyBackground*>(arg);
         if (self->max_tasks_count_ <= (CONFIG_MAX_BACKGROUND_TASKS >> 1)) {
@@ -177,6 +162,7 @@ void MyBackground::PrintBackgroundInfo()
             printf("  Num:    Task creation sequence number.\n");
         #endif
     }, "PrintBg", this);
+#endif
 }
 
 /// @brief 后台管理任务
