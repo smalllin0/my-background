@@ -2,22 +2,20 @@
 #include "sdkconfig.h"
 #include <esp_log.h>
 
-
 #define TAG "MyBackground"
 
-
-#define TASK_ARRIVED_EVENT  BIT0    // 任务到达事件
-#define INSTANCE_ALIVED     BIT1    // 实例存在事件
 #define CONFIG_DISPLAY_TASK_HANDLE_COMPLETE false
 
+// ============================================================
+// 构造 / 析构
+// ============================================================
 
 MyBackground::MyBackground()
 {
-    // 创建后台管理任务（不再创建 event group，使用 task notify）
+    // 创建后台管理任务（使用 task notify 触发）
     auto result = xTaskCreatePinnedToCore(
-        [](void* arg){
-            auto* background = reinterpret_cast<MyBackground*>(arg);
-            background->BackgroundHandler();
+        [](void* arg) {
+            static_cast<MyBackground*>(arg)->BackgroundHandler();
         },
         "Bg_Task",
         CONFIG_STACK_SIZE,
@@ -29,101 +27,83 @@ MyBackground::MyBackground()
     if (result != pdPASS) {
         ESP_LOGE(TAG, "Failed to create background manager task.");
         background_ = nullptr;
+        return;   // 后台没起来，不创建定时器
+    }
+
+    // 单次定时器：仅当有任务等待且未凑够一批时启动
+    timer_ = xTimerCreate(
+        "Bg_Batch",
+        pdMS_TO_TICKS(CONFIG_WAIT_MS),
+        pdFALSE,                                // 单次
+        this,
+        &MyBackground::TimerCallback
+    );
+    if (!timer_) {
+        ESP_LOGW(TAG, "Failed to create batch timer, "
+                      "fall back to per-item notify.");
     }
 }
 
-MyBackground::~MyBackground()
+// ============================================================
+// 定时器回调
+// ============================================================
+
+void MyBackground::TimerCallback(TimerHandle_t timer)
 {
-    // 单例函数，不应该析构（除非是操作系统回收）
-    if (background_) {
-        xTaskNotifyGive(background_);
-        vTaskDelete(background_);
+    auto* self = static_cast<MyBackground*>(pvTimerGetTimerID(timer));
+
+    // 定时器已到期，清零状态；下一次入队会重新启动它
+    self->timer_active_.store(false, std::memory_order_relaxed);
+
+    // 有任务才唤醒后台，避免空转
+    if (self->background_ && self->task_list_.used_size() > 0) {
+        xTaskNotifyGive(self->background_);
     }
 }
 
-
-/// @brief 调度一个任务到后台运行
-/// @param fn 任务函数
-/// @param task_name 任务名
-/// @param arg 任务函数参数
-/// @param free_fn 任务清理时资源回收函数
-/// @return 调度到后台队列成功返回true
-bool MyBackground::Schedule(TaskFun fn, const char* task_name, void* arg, FreeFun free_fn) 
-{
-    if (!fn) {
-        ESP_LOGE(TAG, "Attempt to schedule null task function.");
-        return false;
-    }
-    if (task_list_.full()) {
-        printf("Task buffer full, task dropped.\n");
-        return false;
-    }
-    // 注意：引用捕获在这里是安全的，因为：
-    // 1. lambda 在 push_back 内部立即执行
-    // 2. Task 构造函数拷贝所有数据
-    // 3. 构造在函数返回前完成
-    auto ok = task_list_.construct([=](Task* task){
-        new (task) Task(task_name, fn, arg, free_fn);
-    });
-    if (ok) {
-        // 计算更新最大任务数量
-        auto count = task_list_.size();
-        if ( count > max_tasks_count_ ) {
-            max_tasks_count_ = count;
-        }
-        if (background_) xTaskNotifyGive(background_);
-    }
-
-    return ok;
-}
-
-/// @brief 调度一个任务到后台运行(无参数任务函数兼容版本，后续可能删除)
-#if CONFIG_SUPPORT_TASK_WITHOUT_ARG
-bool MyBackground::Schedule(TaskWithoutArgFun fn, const std::string& task_name) 
-{
-    if (!fn) {
-        ESP_LOGE(TAG, "Attempt to schedule null task function.");
-        return false;
-    }
-    auto function = [fn](void*) { fn(); };
-    return Schedule(function, task_name.c_str(), nullptr, nullptr);
-}
-#endif
+// ============================================================
+// 清理
+// ============================================================
 
 size_t MyBackground::Clear(const std::string& name)
 {
-    size_t count = 0;
-
+    // 清空所有任务
     if (name.empty()) {
-        count = task_list_.size();
-        task_list_.clear([](Task& task){
-            task.Cleanup();
-        });
-    } else {
-        task_list_.remove_if([&](Task& task){
-            if (name == task.name) {
-                count ++;
-                task.Cleanup();
-                return true;
-            }
-            return false;
-        });
+        size_t count = static_cast<size_t>(task_list_.used_size());
+        task_list_.clear();
+        return count;
     }
-    return count;
+
+    // 按名字清空指定任务
+    return static_cast<size_t>(task_list_.erase_if([&](BgTask& task) noexcept {
+        return name == task.name;
+    }));
 }
 
+// ============================================================
+// 调试
+// ============================================================
 
 void MyBackground::PrintBackgroundInfo()
 {
-#if CONFIG_ENABLE_TASK_CAPTURE_SUPPORT
-    Schedule([this](void* arg){
-        if (max_tasks_count_ <= (CONFIG_MAX_BACKGROUND_TASKS >> 1)) {
-            ESP_LOGI(TAG, "current tasks: %d, Max background tasks: %d", task_list_.size(), max_tasks_count_);
-        } else if (max_tasks_count_ <= ((CONFIG_MAX_BACKGROUND_TASKS >> 1) + (CONFIG_MAX_BACKGROUND_TASKS >> 2))) {
-            ESP_LOGW(TAG, "current tasks: %d, Max background tasks: %d", task_list_.size(), max_tasks_count_);
-        } else {
-            ESP_LOGE(TAG, "current tasks: %d, Max background tasks: %d", task_list_.size(), max_tasks_count_);
-        }
+    Schedule(
+        "PrintBg",
+        [](void*) {
+            auto& bg = MyBackground::GetInstance();
+            const auto current = bg.GetBackgroundTasks();
+            const auto max_cnt = bg.max_tasks_count_.load(std::memory_order_relaxed);
+
+            if (max_cnt <= (CONFIG_MAX_BACKGROUND_TASKS >> 1)) {
+                ESP_LOGI(TAG, "current tasks: %d, Max background tasks: %d",
+                         (int)current, (int)max_cnt);
+            } else if (max_cnt <= ((CONFIG_MAX_BACKGROUND_TASKS >> 1) +
+                                   (CONFIG_MAX_BACKGROUND_TASKS >> 2))) {
+                ESP_LOGW(TAG, "current tasks: %d, Max background tasks: %d",
+                         (int)current, (int)max_cnt);
+            } else {
+                ESP_LOGE(TAG, "current tasks: %d, Max background tasks: %d",
+                         (int)current, (int)max_cnt);
+            }
 
         #ifdef CONFIG_FREERTOS_USE_STATS_FORMATTING_FUNCTIONS
             char task_list_buffer[1024];
@@ -137,53 +117,86 @@ void MyBackground::PrintBackgroundInfo()
             printf("  Stack:  Mini remaining stack space during task execution (in words).\n");
             printf("  Num:    Task creation sequence number.\n");
         #endif
-    }, "PrintBg");
-#else
-    Schedule([](void* arg){
-        auto self = reinterpret_cast<MyBackground*>(arg);
-        if (self->max_tasks_count_ <= (CONFIG_MAX_BACKGROUND_TASKS >> 1)) {
-            ESP_LOGI(TAG, "current tasks: %d, Max background tasks: %d", self->task_list_.size(), self->max_tasks_count_);
-        } else if (self->max_tasks_count_ <= ((CONFIG_MAX_BACKGROUND_TASKS >> 1) + (CONFIG_MAX_BACKGROUND_TASKS >> 2))) {
-            ESP_LOGW(TAG, "current tasks: %d, Max background tasks: %d", self->task_list_.size(), self->max_tasks_count_);
-        } else {
-            ESP_LOGE(TAG, "current tasks: %d, Max background tasks: %d", self->task_list_.size(), self->max_tasks_count_);
         }
-
-        #ifdef CONFIG_FREERTOS_USE_STATS_FORMATTING_FUNCTIONS
-            char task_list_buffer[1024];
-            vTaskList(task_list_buffer);
-
-            printf("Name        State     Pri      Stack  Num\n");
-            printf("-----------------------------------------\n");
-            printf("%s\n", task_list_buffer);
-            printf("help: X(Running) B(Blocked) R(Ready) D(Deleted) S(Suspended)\n");
-            printf("  Pri:    Priority, higher value indicates higher priority.\n");
-            printf("  Stack:  Mini remaining stack space during task execution (in words).\n");
-            printf("  Num:    Task creation sequence number.\n");
-        #endif
-    }, "PrintBg", this);
-#endif
+    );
 }
 
-/// @brief 后台管理任务
+// ============================================================
+// 内部辅助
+// ============================================================
+
+void MyBackground::SetTaskName(BgTask* slot, const char* name)
+{
+    if (!name) {
+        slot->name[0] = '\0';
+        return;
+    }
+
+    strncpy(slot->name, name, CONFIG_BG_NAME_LEN - 1);
+    slot->name[CONFIG_BG_NAME_LEN - 1] = '\0';
+}
+
+void MyBackground::NotifyTaskAdded()
+{
+    // 更新历史最大任务数
+    size_t cur  = static_cast<size_t>(task_list_.used_size());
+    size_t prev = max_tasks_count_.load(std::memory_order_relaxed);
+    while (cur > prev &&
+           !max_tasks_count_.compare_exchange_weak(prev, cur,
+                                                   std::memory_order_relaxed)) {
+    }
+
+    // 定时器创建失败：退化为每次入队立即通知
+    if (!timer_) {
+        if (background_) xTaskNotifyGive(background_);
+        return;
+    }
+
+    // 攒够一批：立即通知 + 停掉定时器
+    if (cur >= CONFIG_BATCH_SIZE) {
+        if (timer_active_.exchange(false, std::memory_order_relaxed)) {
+            xTimerStop(timer_, 0);
+        }
+        if (background_) xTaskNotifyGive(background_);
+        return;
+    }
+
+    // 不足一批：只在"第一个任务到达"时启动定时器
+    // 后续任务到达时 CAS 会失败，不会重置计时
+    bool expected = false;
+    if (timer_active_.compare_exchange_strong(expected, true,
+                                              std::memory_order_relaxed)) {
+        xTimerStart(timer_, 0);
+    }
+}
+
+// ============================================================
+// 后台管理任务
+// ============================================================
+
 void MyBackground::BackgroundHandler()
 {
-    while(true) {
-
+    for (;;) {
         // 等待通知
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
-        while (!task_list_.empty()) {
-            task_list_.consume_front([](Task* task){
-                task->execute();
+        // 逐节点消费：
+        //   - 每个节点从 used 链弹出、执行、放回 free 链
+        //   - used 链在消费期间始终可见，Clear 的 erase_if 能看到剩余任务
+        //   - 只有"正在执行的那一个"在窗口期对 Clear 不可见，
+        //     但它 executed 已为 true，不属于漏删
+        while (task_list_.consume_front([](BgTask* task) noexcept {
+            task->Invoke();
 #if CONFIG_DISPLAY_TASK_HANDLE_COMPLETE
-                ESP_LOGI(TAG, "%s: 处理完成", task->name);
+            ESP_LOGI(TAG, "%s: 处理完成", task->name);
 #endif
-            });
+        })) {
+            // 空循环体
         }
     }
+
+    // 正常流程永远不会到这里
     ESP_LOGE(TAG, "Background manager task run out of range!");
     background_ = nullptr;
     vTaskDelete(nullptr);
 }
-
