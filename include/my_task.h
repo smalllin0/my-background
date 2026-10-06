@@ -15,20 +15,28 @@ using FreeFn = void (*)(void* arg, bool executed);
 struct BgTask {
     static constexpr size_t STORAGE_SIZE = CONFIG_BG_INLINE_DATA_SIZE;
 
+    using Destroyer = void (*)(void*, bool) noexcept;
+
     void*   arg{nullptr};                       // 用户参数指针
     bool    data_on_heap{false};                // 参数数据是否存放在堆上
     bool    executed{false};                    // 是否已经真正运行过
     char    name[CONFIG_BG_NAME_LEN]{};         // 任务名称（零初始化）
+    Destroyer destroy{nullptr};                 // 用户释放参数的函数
     alignas(std::max_align_t) std::byte storage[STORAGE_SIZE];
 
     /// @brief 后台任务运行入口
-    /// @note 先置位 executed 再 Run()，保证 free_fn 能看到正确的执行状态
+    /// @note 先置位 executed 再 Run()，保证 destroy 能看到正确的执行状态
     void Invoke() {
         executed = true;
         Run();
     }
 
-    virtual ~BgTask() = default;
+    virtual ~BgTask() {
+        if (arg && destroy) {
+            destroy(arg, data_on_heap);
+            arg = nullptr;
+        }
+    }
 
     /// @brief 任务的参数对象构造函数
     template <typename T, typename... Args>
@@ -41,6 +49,15 @@ struct BgTask {
             arg = new T(std::forward<Args>(args)...);
             data_on_heap = true;
         }
+        destroy = [](void* ctx, bool on_heap) noexcept {
+            auto* d = static_cast<T*>(ctx);
+            if (on_heap) {
+                delete d;
+            } else {
+                d->~T();
+            }
+        };
+
         return static_cast<T*>(arg);
     }
 
@@ -51,21 +68,6 @@ struct BgTask {
     /// @brief 任务参数安全转换函数（const 版）
     template <typename T>
     const T* get() const noexcept { return static_cast<const T*>(arg); }
-
-    /// @brief 任务的参数对象清理
-    template <typename T>
-    void destroy() {
-        if (!arg) return;
-        auto* d = static_cast<T*>(arg);
-        if (data_on_heap) {
-            delete d;
-        } else {
-            d->~T();
-        }
-        arg = nullptr;
-        data_on_heap = false;
-    }
-
 protected:
     /// @brief 任务后台运行逻辑，通过 Invoke() 调用
     virtual void Run() = 0;
@@ -86,7 +88,6 @@ struct TaskWrapper : BgTask {
     ~TaskWrapper() override {
         auto* d = get<Data>();
         if (d && d->free_fn) d->free_fn(d->ctx, executed);
-        destroy<Data>();
     }
 
 protected:
