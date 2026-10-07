@@ -1,58 +1,82 @@
 menu "MyBackground 组件配置"
 
-config MAX_BACKGROUND_TASKS
-    int "最大后台任务数量 (Maximum number of concurrent background tasks)"
-    range 8 255
-    default 128
-    help
-        可同时排队和执行的最大后台任务数。
-        值越大，并发能力越强，但内存占用越高。
-        最小建议值：8，最大支持：255。
+    config MAX_BACKGROUND_TASKS
+        int "最大后台任务队列容量 (Max queued background tasks)"
+        range 8 255
+        default 64
+        help
+            可同时排队等待执行的最大任务数。每个槽位约 50~64 字节，内存占用为 容量 × sizeof(BgTask)。
+            建议：   - 常用场景：    64
+                    - 高并发场景：  128
 
 
-config STACK_SIZE
-    int "每个后台任务的堆栈大小（单位：字，word）(Stack size per task in words)"
-    default 10240
-    help
-        为每个后台任务分配的堆栈大小（1 word = 4 字节，在 ESP32/ESP32-C3 上）。
-        较大的堆栈可支持更复杂的函数调用，但会增加总内存消耗。
-        默认值 10240 words ≈ 40 KB。
+    config BG_BATCH_SIZE
+        int "批处理大小 (Batch size)"
+        range 8 255
+        default 10
+        help
+            队列中待处理任务数达到该值时，立即唤醒后台任务，停掉等待定时器，避免继续攒批。
+            值越大，批处理收益越高，但响应延迟也越大。
 
-config CORE_ID
-    int "后台任务绑定的 CPU 核心 (CPU core affinity for background tasks)"
-    default 0
-    help
-        指定后台任务运行的 CPU 核心：
-          -1 : 无绑定 —— 可在任意核心运行  
-           0 : 固定在 Core 0
-        注意：ESP32-C3 为单核芯片，仅 Core 0 可用。
-        在 ESP32-C3 上设为 -1 无实际效果。
+    config BG_WAIT_MS
+        int "最长批处理等待时间，单位毫秒 (Max batch wait, ms)"
+        range 1 1000
+        default 20
+        help
+            从"队列第一个任务到达"开始计时，超过该时间则唤醒，后台任务处理队列中的剩余零散任务。
+            值越大，批处理收益越高，但任务响应延迟也越大。对 ACK 通知等时效敏感的任务，建议 5~15 ms; 
+            纯后台统计任务可用 40~100 ms。
 
-config BACKGROUND_TASKS_PRIORITY
-    int "后台任务优先级 (Background task priority)"
-    range 0 8
-    default 5
-    help
-        设置 FreeRTOS 后台任务的优先级：
-          0 = 最低优先级  
-          8 = 最高优先级
-        建议设置低于实时任务（如中断处理），但高于空闲任务，
-        以保证及时响应又不影响系统稳定性。
+    config STACK_SIZE
+        int "后台任务栈大小，单位字节 (Stack size, bytes)"
+        range 2048 65536
+        default 10240
+        help
+            为后台任务分配的栈大小，单位字节 (bytes), 任务执行的 Run() 里如果调用 cJSON_Parse、std::string、
+            深层递归等，需要较大的栈。推荐：- JSON/字符串处理： 8192 ~ 12288 ; - 复杂 HTTP 处理： 12288 ~ 16384
+            运行期可用 uxTaskGetStackHighWaterMark 观察实际水位，通过 PrintBackgroundInfo 打印。
 
-config ENABLE_TASK_CAPTURE_SUPPORT
-    bool "启用任务变量捕获功能 (Enable lambda-like variable capture)"
-    default y
-    help
-        允许后台任务“捕获”调用上下文中的局部变量（类似 C++ Lambda 表达式）。
-        编程更简便，但启用后会增加内存开销和实现复杂度。
-        仅在任务需要引用已退出函数的局部变量时才启用。
+    config CORE_ID
+        int "后台任务绑定的 CPU 核心 (Core affinity)"
+        default 0
+        help
+            后台任务绑定到指定 CPU 核心：-1 : 不绑定，允许在任意核心运行; 0 : 固定在 Core 0
+            注意：
+              - ESP32-C3 为单核芯片，仅 Core 0 可用；
 
-config SUPPORT_TASK_WITHOUT_ARG
-    bool "支持无参任务函数 'void func(void)' (Support no-argument task functions)"
-    default n
-    help
-        允许注册形如 void func(void) 的任务函数。
-        若禁用，则所有任务必须声明为 void func(void *arg)，即使不使用参数。
-        不建议启用，在库内自动转化为默认参数为nullptr的含参任务。
+    config BACKGROUND_TASKS_PRIORITY
+        int "后台任务优先级 (Task priority)"
+        range 1 10
+        default 5
+        help
+            FreeRTOS 后台任务优先级，数值越大优先级越高。(设置过高会抢占高优先级业务，过低会导致后台任务迟迟得不到调度)
+            建议：- 低于 tcpip 线程(默认18)，避免抢占网络栈；
+                 - 4~6 为典型值。
+
+    config BG_NAME_LEN
+        int "任务名最大长度，含终止符 (Task name max length)"
+        range 6 30
+        default 10
+        help
+            任务名最大字节数（含 '\0'）。超过会被截断，影响 Clear() 按名匹配。
+            ★ 内存对齐建议：取值为 4*N - 2。这能让 name[] 结束位置正好落在 4 字节边界，
+               使后面的 destroy 指针无需填充字节，节省内存。
+
+    config BG_INLINE_DATA_SIZE
+        int "Data 内联存储大小，单位字节 (Inline storage size)"
+        range 16 64
+        default 24
+        help
+            BgTask::Data 结构体 ≤ 该值时使用内联 storage 存储，
+            超过走堆分配。建议 16~3, 覆盖多数任务； 
+            高频任务控制在 该范围内 字节内可避免堆碎片。
+
+    config BG_DISPLAY_TASK_HANDLE_COMPLETE
+        bool "打印任务处理完成日志 (Log each task completion)"
+        default n
+        help
+            启用后，每个后台任务执行完毕都会打印一行日志：
+              I (1234) MyBackground: TcpRecv: 处理完成
+            仅用于调试——会显著增加串口输出和 CPU 占用，生产环境保持关闭。
 
 endmenu
