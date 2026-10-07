@@ -21,7 +21,7 @@ my-background/
 ├── include/
 │   ├── my_background.h   # MyBackground 类
 │   └── my_task.h         # BgTask / TaskWrapper
-├── my_background.cc
+├── src/my_background.cc
 ├── Kconfig
 └── README.md
 ```

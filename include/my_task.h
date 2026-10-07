@@ -1,9 +1,7 @@
 #ifndef MY_TASK_H_
 #define MY_TASK_H_
 
-
-#define CONFIG_BG_NAME_LEN          10      // 任务名长度(N * 4 - 2)
-#define CONFIG_BG_INLINE_DATA_SIZE  32      // 内联数据块大小
+#include "sdkconfig.h"
 
 
 using RunFn  = void (*)(void* arg);
