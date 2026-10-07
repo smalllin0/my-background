@@ -9,9 +9,7 @@
 #include "freertos/timers.h"
 #include "my_linklist.h"
 #include "my_task.h"
-
-#define CONFIG_BATCH_SIZE           16      // 批处理大小
-#define CONFIG_WAIT_MS              40      // 最长等待时间
+#include "sdkconfig.h"
 
 /// @brief 后台任务管理类
 ///
@@ -50,6 +48,7 @@ public:
                       "任务不能添加成员变量，需要时只能放入 Data 结构中并使用 emplace<Data> 打包");
         static_assert(alignof(T) <= alignof(BgTask), "继承任务 alignment too strict");
 
+        if (!background_) return false;
         auto ok = task_list_.construct([&](BgTask* slot) noexcept {
             new (slot) T(std::forward<Args>(args)...);
             SetTaskName(slot, name);

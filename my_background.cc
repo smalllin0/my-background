@@ -4,8 +4,6 @@
 
 #define TAG "MyBackground"
 
-#define CONFIG_DISPLAY_TASK_HANDLE_COMPLETE false
-
 // ============================================================
 // 构造 / 析构
 // ============================================================
@@ -33,7 +31,7 @@ MyBackground::MyBackground()
     // 单次定时器：仅当有任务等待且未凑够一批时启动
     timer_ = xTimerCreate(
         "Bg_Batch",
-        pdMS_TO_TICKS(CONFIG_WAIT_MS),
+        pdMS_TO_TICKS(CONFIG_BG_WAIT_MS),
         pdFALSE,                                // 单次
         this,
         &MyBackground::TimerCallback
@@ -86,39 +84,51 @@ size_t MyBackground::Clear(const std::string& name)
 
 void MyBackground::PrintBackgroundInfo()
 {
-    Schedule(
-        "PrintBg",
-        [](void*) {
-            auto& bg = MyBackground::GetInstance();
-            const auto current = bg.GetBackgroundTasks();
-            const auto max_cnt = bg.max_tasks_count_.load(std::memory_order_relaxed);
+    if (!background_) return;
 
-            if (max_cnt <= (CONFIG_MAX_BACKGROUND_TASKS >> 1)) {
-                ESP_LOGI(TAG, "current tasks: %d, Max background tasks: %d",
-                         (int)current, (int)max_cnt);
-            } else if (max_cnt <= ((CONFIG_MAX_BACKGROUND_TASKS >> 1) +
-                                   (CONFIG_MAX_BACKGROUND_TASKS >> 2))) {
-                ESP_LOGW(TAG, "current tasks: %d, Max background tasks: %d",
-                         (int)current, (int)max_cnt);
-            } else {
-                ESP_LOGE(TAG, "current tasks: %d, Max background tasks: %d",
-                         (int)current, (int)max_cnt);
-            }
+    auto& bg = MyBackground::GetInstance();
+    auto task_size = CONFIG_MAX_BACKGROUND_TASKS;
+    auto current = task_list_.used_size();
+    auto left = task_size - current;
+    auto max_cnt = bg.max_tasks_count_.load(std::memory_order_relaxed);
 
-        #ifdef CONFIG_FREERTOS_USE_STATS_FORMATTING_FUNCTIONS
-            char task_list_buffer[1024];
-            vTaskList(task_list_buffer);
+    if (left <  (task_size >> 3)) {                                             
+        ESP_LOGE(TAG, "current: %u, peak: %u", (unsigned)current, (unsigned)max_cnt);    // 1/8
+    } else if (left < (task_size >> 2)) {                                            
+        ESP_LOGW(TAG, "current: %u, peak: %u", (unsigned)current, (unsigned)max_cnt);    // 1/4 
+    } else {                                                                    
+        ESP_LOGI(TAG, "current: %u, peak: %u", (unsigned)current, (unsigned)max_cnt);
+    }
 
-            printf("Name        State     Pri      Stack  Num\n");
-            printf("-----------------------------------------\n");
-            printf("%s\n", task_list_buffer);
-            printf("help: X(Running) B(Blocked) R(Ready) D(Deleted) S(Suspended)\n");
-            printf("  Pri:    Priority, higher value indicates higher priority.\n");
-            printf("  Stack:  Mini remaining stack space during task execution (in words).\n");
-            printf("  Num:    Task creation sequence number.\n");
-        #endif
-        }
-    );
+
+
+    UBaseType_t watermark_words = uxTaskGetStackHighWaterMark(bg.background_);
+    uint32_t watermark_bytes = watermark_words * sizeof(StackType_t);
+    uint32_t total = CONFIG_STACK_SIZE;
+
+    if (watermark_bytes < (total >> 3)) {                               
+        ESP_LOGE(TAG, "Stack watermark CRITICAL: %u/%u bytes free",     // 1/8
+            (unsigned)watermark_bytes, (unsigned)total);
+     } else if (watermark_bytes < (total >> 2)) {                       
+        ESP_LOGW(TAG, "Stack watermark WARNING: %u/%u bytes free",      // 1/4
+            (unsigned)watermark_bytes, (unsigned)total);
+     } else {
+        ESP_LOGI(TAG, "Stack watermark: %u/%u bytes free",
+            (unsigned)watermark_bytes, (unsigned)total);
+     }
+
+    #ifdef CONFIG_FREERTOS_USE_STATS_FORMATTING_FUNCTIONS
+    char task_list_buffer[1024];
+    vTaskList(task_list_buffer);
+
+    printf("Name        State     Pri      Stack  Num\n"
+           "-----------------------------------------\n"
+           "%s\n", task_list_buffer);
+    printf("help: X(Running) B(Blocked) R(Ready) D(Deleted) S(Suspended)\n"
+           "  Pri:    Priority, higher value indicates higher priority.\n"
+           "  Stack:  Mini remaining stack space during task execution (in words).\n"
+           "  Num:    Task creation sequence number.\n");
+    #endif
 }
 
 // ============================================================
@@ -153,7 +163,7 @@ void MyBackground::NotifyTaskAdded()
     }
 
     // 攒够一批：立即通知 + 停掉定时器
-    if (cur >= CONFIG_BATCH_SIZE) {
+    if (cur >= CONFIG_BG_BATCH_SIZE) {
         if (timer_active_.exchange(false, std::memory_order_relaxed)) {
             xTimerStop(timer_, 0);
         }
